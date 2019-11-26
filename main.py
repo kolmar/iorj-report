@@ -8,16 +8,25 @@ import bs4
 import requests
 import patterns
 import oauth
+import util
 
+# Parameters for this script
+
+report_dirname = '/Users/kkolmar/common/iorj/report2019/'
+data_start_date = '2018-11-26'
+data_end_date = '2019-11-26'
+interesting_issues = ['2018-13-4', '2019-14-1', '2019-14-2', '2019-14-3']
 
 # 1)     Количество просмотров, уникальных посетителей, скачиваний текстов отдельно для русской и английской версии сайта (в целом, без разбора отдельных страниц)
 #
 # просмотры, посетители рус:
 # filters=ym:pv:URLDomain=='iorj.hse.ru' AND ym:pv:URLPath!*'/en/*'&metrics=ym:pv:pageviews,ym:pv:users&sort=-ym:pv:pageviews
+# make_query(diff = {'filters': "ym:pv:URLDomain=='iorj.hse.ru' AND ym:pv:URLPath!*'/en/*'", 'metrics': 'ym:pv:pageviews,ym:pv:users'})
 # 63017.0, 14213.0
 #
 # просмотры посетители англ:
 # filters=ym:pv:URLDomain=='iorj.hse.ru' AND ym:pv:URLPath=*'/en/*'&metrics=ym:pv:pageviews,ym:pv:users&sort=-ym:pv:pageviews
+# make_query(diff = {'filters': "ym:pv:URLDomain=='iorj.hse.ru' AND ym:pv:URLPath=*'/en/*'", 'metrics': 'ym:pv:pageviews,ym:pv:users'})
 # 14979.0, 4616.0
 #
 # скачиваний статей/журналов англ:
@@ -29,17 +38,20 @@ import oauth
 # вручную учесть закачки не статей и текстов
 # 8322, 3865
 
-dirpath = '/Users/kkolmar/common/iorj/report2017/'
+dirpath = report_dirname
 archive_dir = os.path.join(dirpath, 'archive')
 issues_dir = os.path.join(archive_dir, 'issues')
+util.ensure_directory(issues_dir)
 
 # Формирование файла rawdownloads.txt:
+# Отчеты - Стандартные отчеты - Содержание - Загрузки файлов
 # страница загрузки - хост - iorj.hse.ru; загрузка файла - хост - iorj.hse.ru
 # группировка по страница загрузки - путь
 raw_downloads_path = os.path.join(dirpath, 'rawdownloads.txt')
 
 # Данные приложения IORJReport:
 # ID: 12f41230e56a42a78d25afefbfdf93b5
+# Пароль: 98b2e0efb06a4cb08baedafeb82d93e1
 # Callback URL: https://oauth.yandex.ru/verification_code
 
 
@@ -57,11 +69,21 @@ def query_dict():
             'accuracy': 'full',
             'limit': '50',
             'oauth_token': oauth.token,
-            'date1': '2016-11-13',
-            'date2': '2017-11-14',
+            'date1': data_start_date,
+            'date2': data_end_date,
             'filters': "ym:pv:URLDomain=='iorj.hse.ru'",
             'metrics': 'ym:pv:pageviews,ym:pv:users',
             'sort': '-ym:pv:pageviews'}
+
+
+def get_dict_for_query(diff):
+    result = query_dict()
+
+    for key, value in diff.items():
+        modified_value = value(result[key]) if callable(value) else value
+        result[key] = str(modified_value)
+
+    return result
 
 
 def make_url(query_dict):
@@ -72,11 +94,19 @@ def make_url(query_dict):
     return urllib.parse.urlunsplit((scheme, netloc, path, urllib.parse.urlencode(query_dict), ''))
 
 
+def make_query(query=None, diff=None):
+    headers = {'Authorization': f'OAuth {oauth.token}'}
+    if query is None:
+        query = get_dict_for_query(diff)
+
+    return requests.get(make_url(query), headers=headers).json()
+
+
 def process_request(query, grouping_names):
     if isinstance(grouping_names, str):
         grouping_names = [grouping_names]
 
-    result = requests.get(make_url(query)).json()
+    result = make_query(query)
 
     def dimensions_data(data):
         return [data['dimensions'][0][name] for name in grouping_names]
@@ -84,22 +114,35 @@ def process_request(query, grouping_names):
     def metrics_data(data):
         return [int(item) for item in data['metrics']]
 
+    if 'data' not in result:
+        print('query:', query)
+        print('result:', result)
+        raise KeyError('data is missing')
+
     return [tuple(dimensions_data(data) + metrics_data(data)) for data in result['data']]
 
 
 def views_by_country():
-    query = query_dict()
-    query['dimensions'] = 'ym:pv:regionCountry'
-    query['limit'] = 300
+    query = get_dict_for_query({
+        'dimensions': 'ym:pv:regionCountry',
+        'limit': 300})
+
+    # query = query_dict()
+    # query['dimensions'] = 'ym:pv:regionCountry'
+    # query['limit'] = 300
 
     return process_request(query, ['name', 'iso_name'])
 
 
 def views_by_city():
-    query = query_dict()
-    query['dimensions'] = 'ym:pv:regionCity'
-    # query['filters'] += " AND ym:pv:regionCountryIsoName=.('RU', 'UA', 'KZ', 'BY')"
-    query['filters'] += " AND ym:pv:regionCountryIsoName=='RU'"
+    query = get_dict_for_query({
+        'dimensions': 'ym:pv:regionCity',
+        'filters': lambda filters: filters + " AND ym:pv:regionCountryIsoName=='RU'"})
+
+    # query = query_dict()
+    # query['dimensions'] = 'ym:pv:regionCity'
+    # # query['filters'] += " AND ym:pv:regionCountryIsoName=.('RU', 'UA', 'KZ', 'BY')"
+    # query['filters'] += " AND ym:pv:regionCountryIsoName=='RU'"
 
     return process_request(query, 'name')
 
@@ -111,9 +154,9 @@ def language_suffix(language):
 def views_of_issues(issues):
     issue_articles = {issue: {} for issue in issues}
 
-    query = query_dict()
-    query['dimensions'] = 'ym:pv:URLPath'
-    query['limit'] = 5000
+    query = get_dict_for_query({
+        'dimensions': 'ym:pv:URLPath',
+        'limit': 5000})
 
     result = process_request(query, 'name')
 
@@ -144,7 +187,8 @@ def parse_issue_file(issue_name):
 
     with open(os.path.join(issues_dir, issue_name), 'r') as f:
         soup = bs4.BeautifulSoup(f.read(), "html5lib")
-        soup = soup.find('table', class_='issue_type2_maintable').find_all('div', class_='link')
+        soup = soup.find('table', class_='issue_type2_maintable').find_all('td', class_='link')
+        soup = [td.find('div', recursive=False) for td in soup]
 
         return [parse_item(item) for item in soup]
 
@@ -158,15 +202,28 @@ def parse_raw_downloads(filepath) -> {str: Download}:
 
     with open(filepath, 'r') as f:
         for url, _, _, _, n in grouper(f, 5, ""):
-            n = int(n)
-            if n < 3: n = -1
-
             path = urllib.parse.urlsplit(url.strip()).path
             match = patterns.match_path(path)
             if match and match.id:
-                articles[match.id + language_suffix(match.language)] = Download(match.id, int(n))
+                article_id = match.id + language_suffix(match.language)
+                articles.setdefault(article_id, Download(match.id, 0))
+                articles[article_id] = Download(match.id, articles[article_id].count + int(n))
 
     return articles
+
+
+def ensure_issue_file(issue_number, language):
+    issue_file = issue_number + language_suffix(language)
+
+    if not os.path.exists(issue_file):
+        issue_url = "https://iorj.hse.ru" + ("/en" if language == "en" else "") + "/" + issue_number + ".html"
+
+        issue_content = requests.get(issue_url).text
+
+        with open(os.path.join(issues_dir, issue_file), 'w', encoding='utf-8') as file:
+            file.write(issue_content)
+
+    return issue_file
 
 
 def gather_issue_data(issues_numbers, raw_downloads_path):
@@ -176,14 +233,14 @@ def gather_issue_data(issues_numbers, raw_downloads_path):
     issues = []
     for issue in issues_numbers:
         for language in ['ru', 'en']:
-            issue_file = issue + language_suffix(language)
+            issue_file = ensure_issue_file(issue, language)
 
             articles = []
             for article in parse_issue_file(issue_file):
                 assert(article.language == language)
 
                 article_key = article.id + language_suffix(article.language)
-                download_count = downloads[article_key].count if article_key in downloads else -1
+                download_count = downloads[article_key].count if article_key in downloads else 0
                 views, visitors = issue_views[issue].get(article_key, (0, 0))
                 articles.append(ArticleData(
                     downloads=download_count,
@@ -199,7 +256,7 @@ def gather_issue_data(issues_numbers, raw_downloads_path):
 
 
 def write_csv(filename, rows):
-    with open(os.path.join(dirpath, filename + '.csv'), 'w', encoding='cp1251') as file:
+    with open(os.path.join(dirpath, filename + '.csv'), 'w', encoding='utf-8') as file:
         writer = csv.writer(file, delimiter=';')
         writer.writerows(rows)
 
@@ -209,7 +266,7 @@ def write_user_reports():
     write_csv('views_by_city', views_by_city())
 
 
-def write_issue_report(issues):
+def write_issue_report(issues=interesting_issues):
     article_data = []
     for number, language, views, visitors, articles in gather_issue_data(issues, raw_downloads_path):
         year, _, no = number.split('-')
@@ -225,16 +282,31 @@ def write_issue_report(issues):
                 ', '.join(authors),
                 views,
                 visitors,
-                '-' if downloads < 0 else str(downloads)))
+                '–' if downloads < 0 else str(downloads)))
 
     write_csv('article_data', article_data)
 
 
-def main():
-    write_user_reports()
+def basic_stats():
+    ru_views, ru_visits = make_query(diff={
+        'filters': "ym:pv:URLDomain=='iorj.hse.ru' AND ym:pv:URLPath!*'/en/*'",
+        'metrics': 'ym:pv:pageviews,ym:pv:users'})['data'][0]['metrics']
+    en_views, en_visits = make_query(diff={
+        'filters': "ym:pv:URLDomain=='iorj.hse.ru' AND ym:pv:URLPath=*'/en/*'",
+        'metrics': 'ym:pv:pageviews,ym:pv:users'})['data'][0]['metrics']
 
-    interesting_issues = ['2016-11-4', '2017-12-1', '2017-12-2', '2017-12-3']
-    write_issue_report(interesting_issues)
+    downloads = parse_raw_downloads(raw_downloads_path)
+    ru_downloads = sum(download.count for (id, download) in downloads.items() if not id.endswith('en'))
+    en_downloads = sum(download.count for (id, download) in downloads.items() if id.endswith('en'))
+
+    print(int(ru_views), int(ru_visits), ru_downloads)
+    print(int(en_views), int(en_visits), en_downloads)
+
+
+def main():
+    #basic_stats()
+    #write_user_reports()
+    write_issue_report()
 
 
 if __name__ == '__main__':
