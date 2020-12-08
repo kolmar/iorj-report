@@ -12,31 +12,10 @@ import util
 
 # Parameters for this script
 
-report_dirname = '/Users/kkolmar/common/iorj/report2019/'
-data_start_date = '2018-11-26'
-data_end_date = '2019-11-26'
-interesting_issues = ['2018-13-4', '2019-14-1', '2019-14-2', '2019-14-3']
-
-# 1)     Количество просмотров, уникальных посетителей, скачиваний текстов отдельно для русской и английской версии сайта (в целом, без разбора отдельных страниц)
-#
-# просмотры, посетители рус:
-# filters=ym:pv:URLDomain=='iorj.hse.ru' AND ym:pv:URLPath!*'/en/*'&metrics=ym:pv:pageviews,ym:pv:users&sort=-ym:pv:pageviews
-# make_query(diff = {'filters': "ym:pv:URLDomain=='iorj.hse.ru' AND ym:pv:URLPath!*'/en/*'", 'metrics': 'ym:pv:pageviews,ym:pv:users'})
-# 63017.0, 14213.0
-#
-# просмотры посетители англ:
-# filters=ym:pv:URLDomain=='iorj.hse.ru' AND ym:pv:URLPath=*'/en/*'&metrics=ym:pv:pageviews,ym:pv:users&sort=-ym:pv:pageviews
-# make_query(diff = {'filters': "ym:pv:URLDomain=='iorj.hse.ru' AND ym:pv:URLPath=*'/en/*'", 'metrics': 'ym:pv:pageviews,ym:pv:users'})
-# 14979.0, 4616.0
-#
-# скачиваний статей/журналов англ:
-# страница загрузки - хост - iorj.hse.ru; загрузка файла - хост - iorj.hse.ru; страница загрузки - путь - /en/*
-# 3005, 1508 (скачиваний, уников)
-#
-# скачиваний статей/журналов англ:
-# страница загрузки - хост - iorj.hse.ru; загрузка файла - хост - iorj.hse.ru; страница загрузки - путь - !/en/*
-# вручную учесть закачки не статей и текстов
-# 8322, 3865
+report_dirname = '/Users/kkolmar/common/iorj/report2020/'
+data_start_date = '2019-12-01'
+data_end_date = '2020-12-01'
+interesting_issues = ['2019-14-4', '2020-15-1', '2020-15-2', '2020-15-3']
 
 dirpath = report_dirname
 archive_dir = os.path.join(dirpath, 'archive')
@@ -53,6 +32,10 @@ raw_downloads_path = os.path.join(dirpath, 'rawdownloads.txt')
 # ID: 12f41230e56a42a78d25afefbfdf93b5
 # Пароль: 98b2e0efb06a4cb08baedafeb82d93e1
 # Callback URL: https://oauth.yandex.ru/verification_code
+
+# Получение токена:
+# https://oauth.yandex.ru/authorize?response_type=token&client_id=<идентификатор приложения>
+# https://oauth.yandex.ru/authorize?response_type=token&client_id=12f41230e56a42a78d25afefbfdf93b5
 
 
 Article = namedtuple('Article', ['id', 'title', 'authors', 'url', 'issue', 'language'])
@@ -304,8 +287,8 @@ def basic_stats():
 
 
 def main():
-    #basic_stats()
-    #write_user_reports()
+    basic_stats()
+    write_user_reports()
     write_issue_report()
 
 
