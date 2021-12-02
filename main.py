@@ -1,8 +1,8 @@
-import itertools
 import os.path
 import csv
 import urllib.parse
-from collections import namedtuple
+from collections import namedtuple, defaultdict
+from itertools import zip_longest
 
 import bs4
 import requests
@@ -12,10 +12,12 @@ import util
 
 # Parameters for this script
 
-report_dirname = '/Users/kkolmar/common/iorj/report2020/'
-data_start_date = '2019-12-01'
-data_end_date = '2020-12-01'
-interesting_issues = ['2019-14-4', '2020-15-1', '2020-15-2', '2020-15-3']
+report_dirname = '/Users/kkolmar/common/iorj/report2021/'
+data_start_date = '2020-12-01'
+data_end_date = '2021-12-01'
+
+interesting_issues = ['2020-15-4', '2021-16-1', '2021-16-2', '2021-16-3']
+ignore_issues = {('2021-16-3', 'en')}
 
 dirpath = report_dirname
 archive_dir = os.path.join(dirpath, 'archive')
@@ -23,6 +25,7 @@ issues_dir = os.path.join(archive_dir, 'issues')
 util.ensure_directory(issues_dir)
 
 # Формирование файла rawdownloads.txt:
+# https://metrika.yandex.ru/list
 # Отчеты - Стандартные отчеты - Содержание - Загрузки файлов
 # страница загрузки - хост - iorj.hse.ru; загрузка файла - хост - iorj.hse.ru
 # группировка по страница загрузки - путь
@@ -34,7 +37,6 @@ raw_downloads_path = os.path.join(dirpath, 'rawdownloads.txt')
 # Callback URL: https://oauth.yandex.ru/verification_code
 
 # Получение токена:
-# https://oauth.yandex.ru/authorize?response_type=token&client_id=<идентификатор приложения>
 # https://oauth.yandex.ru/authorize?response_type=token&client_id=12f41230e56a42a78d25afefbfdf93b5
 
 
@@ -46,86 +48,137 @@ Download = namedtuple('Download', ['id', 'count'])
 
 ArticleData = namedtuple('ArticleData', ['id', 'language', 'title', 'authors', 'url', 'issue', 'views', 'visitors', 'downloads'])
 
+DomainFilter = "ym:pv:URLDomain=='iorj.hse.ru'"
+UserFromRussiaFilter = "ym:pv:regionCountryIsoName=='RU'"
+HumanFilter = "ym:s:isRobot=='No'"
 
-def query_dict():
+RussianPageFilter = "ym:pv:URLPath!*'/en/*'"
+EnglishPageFilter = "ym:pv:URLPath=*'/en/*'"
+def page_language_filter(language):
+    return EnglishPageFilter if language == 'en' else RussianPageFilter
+
+
+def default_query():
     return {'ids': '32635220',
-            'accuracy': 'full',
+            'accuracy': 'high',
             'limit': '50',
             'oauth_token': oauth.token,
             'date1': data_start_date,
             'date2': data_end_date,
-            'filters': "ym:pv:URLDomain=='iorj.hse.ru'",
+            'filters': f'{DomainFilter} AND {HumanFilter}',
             'metrics': 'ym:pv:pageviews,ym:pv:users',
-            'sort': '-ym:pv:pageviews'}
+            'sort': '-ym:pv:users'}
 
 
-def get_dict_for_query(diff):
-    result = query_dict()
+def default_query_with(**diff):
+    return combine_queries(default_query(), diff)
 
-    for key, value in diff.items():
-        modified_value = value(result[key]) if callable(value) else value
-        result[key] = str(modified_value)
+
+def combine_queries(*query_parts):
+    result = {}
+
+    for query in query_parts:
+        for key, value in query.items():
+            if callable(value):
+                original = result.get(key, '')
+                result[key] = value(original)
+            else:
+                result[key] = str(value)
 
     return result
 
 
-def make_url(query_dict):
-    scheme = 'https'
-    netloc = 'api-metrika.yandex.ru'
-    path = '/stat/v1/data.json'
-
-    return urllib.parse.urlunsplit((scheme, netloc, path, urllib.parse.urlencode(query_dict), ''))
-
-
-def make_query(query=None, diff=None):
+def execute_query(*query_parts):
     headers = {'Authorization': f'OAuth {oauth.token}'}
-    if query is None:
-        query = get_dict_for_query(diff)
+    query = combine_queries(*query_parts)
+
+    def make_url(query_dict):
+        scheme = 'https'
+        netloc = 'api-metrika.yandex.ru'
+        path = '/stat/v1/data.json'
+
+        return urllib.parse.urlunsplit((scheme, netloc, path, urllib.parse.urlencode(query_dict), ''))
 
     return requests.get(make_url(query), headers=headers).json()
 
 
-def process_request(query, grouping_names):
-    if isinstance(grouping_names, str):
-        grouping_names = [grouping_names]
+def process_request(query, keys):
+    print(f"Processing query with {query['filters']}")
 
-    result = make_query(query)
+    if isinstance(keys, str):
+        keys = [keys]
 
-    def dimensions_data(data):
-        return [data['dimensions'][0][name] for name in grouping_names]
+    sorted_result_keys = []
+    dependant_dimensions = {}
+    result = defaultdict(list)
 
-    def metrics_data(data):
-        return [int(item) for item in data['metrics']]
+    def execute_with_period(date1, date2):
+        print(f'Executing for period {(date1, date2)}')
 
-    if 'data' not in result:
-        print('query:', query)
-        print('result:', result)
-        raise KeyError('data is missing')
+        query_result = execute_query(query, {'date1': date1, 'date2': date2})
+        # print(query)
+        # print(query_result)
 
-    return [tuple(dimensions_data(data) + metrics_data(data)) for data in result['data']]
+        if 'data' in query_result:
+            for data in query_result['data']:
+                if not keys:
+                    key, other_dimensions = '', []
+                else:
+                    key, *other_dimensions = [data['dimensions'][0][name] for name in keys]
+
+                if key not in result:
+                    sorted_result_keys.append(key)
+                    dependant_dimensions[key] = other_dimensions
+
+                metrics = [int(item) for item in data['metrics']]
+                result[key] = [a + b for a, b in zip_longest(result[key], metrics, fillvalue=0)]
+        else:
+            error_types = {error['error_type'] for error in query_result['errors']}
+
+            # 'message': 'Запрос слишком сложный. Пожалуйста, уменьшите интервал дат или семплирование.'
+            if 'query_error' in error_types:
+                period1, period2 = util.split_period(date1, date2)
+                print(f'Failed for period {(date1, date2)}. Retrying with {period1} and {period2}')
+                execute_with_period(*period1)
+                execute_with_period(*period2)
+            else:
+                print('query:', query)
+                print('result:', query_result)
+                raise KeyError('data is missing')
+
+    execute_with_period(data_start_date, data_end_date)
+    return [tuple([key] + dependant_dimensions[key] + result[key]) for key in sorted_result_keys]
 
 
-def views_by_country():
-    query = get_dict_for_query({
-        'dimensions': 'ym:pv:regionCountry',
-        'limit': 300})
-
-    # query = query_dict()
-    # query['dimensions'] = 'ym:pv:regionCountry'
-    # query['limit'] = 300
-
-    return process_request(query, ['name', 'iso_name'])
+# def combine_results(data1, data2):
+#     return sorted( 
+#         {
+#             key: data1.get(key, [0, 0]) + data2.get(key, [0, 0])
+#             for key in set(data1) | set(data2)
+#         }.items(), 
+#         key=lambda item: item[1],
+#         reverse=True)
 
 
-def views_by_city():
-    query = get_dict_for_query({
-        'dimensions': 'ym:pv:regionCity',
-        'filters': lambda filters: filters + " AND ym:pv:regionCountryIsoName=='RU'"})
+def views_by_country(language):
+    print(f'Querying by country for {language}')
+    query = default_query_with(
+        dimensions='ym:pv:regionCountry',
+        filters=lambda filters: f'{filters} AND {page_language_filter(language)}',
+        limit=300)
 
-    # query = query_dict()
-    # query['dimensions'] = 'ym:pv:regionCity'
-    # # query['filters'] += " AND ym:pv:regionCountryIsoName=.('RU', 'UA', 'KZ', 'BY')"
-    # query['filters'] += " AND ym:pv:regionCountryIsoName=='RU'"
+    # return process_request(query, 'name', 'iso_name'])
+    return process_request(query, 'name')
+
+
+def views_by_city(language):
+    print(f'Querying by city for {language}')
+    query = default_query_with(
+        dimensions='ym:pv:regionCity',
+        # 'filters': lambda filters: f"{filters} AND {UserFromRussiaFilter}"})
+        # 'filters': lambda filters: f"{filters} AND ym:pv:regionCountryIsoName=.('RU', 'UA', 'KZ', 'BY')"
+        filters=lambda filters: f'{filters} AND {page_language_filter(language)}')
+
 
     return process_request(query, 'name')
 
@@ -137,7 +190,7 @@ def language_suffix(language):
 def views_of_issues(issues):
     issue_articles = {issue: {} for issue in issues}
 
-    query = get_dict_for_query({
+    query = default_query_with({
         'dimensions': 'ym:pv:URLPath',
         'limit': 5000})
 
@@ -169,7 +222,8 @@ def parse_issue_file(issue_name):
         return Article(id, title, authors, url, issue_name, language)
 
     with open(os.path.join(issues_dir, issue_name), 'r') as f:
-        soup = bs4.BeautifulSoup(f.read(), "html5lib")
+        print('Processing issue', issue_name)
+        soup = bs4.BeautifulSoup(f.read(), 'html5lib')
         soup = soup.find('table', class_='issue_type2_maintable').find_all('td', class_='link')
         soup = [td.find('div', recursive=False) for td in soup]
 
@@ -179,12 +233,12 @@ def parse_issue_file(issue_name):
 def parse_raw_downloads(filepath) -> {str: Download}:
     def grouper(iterable, n, fillvalue=None):
         args = [iter(iterable)] * n
-        return itertools.zip_longest(fillvalue=fillvalue, *args)
+        return zip_longest(fillvalue=fillvalue, *args)
 
     articles = {}
 
     with open(filepath, 'r') as f:
-        for url, _, _, _, n in grouper(f, 5, ""):
+        for url, _, _, _, n in grouper(f, 5, ''):
             path = urllib.parse.urlsplit(url.strip()).path
             match = patterns.match_path(path)
             if match and match.id:
@@ -199,7 +253,7 @@ def ensure_issue_file(issue_number, language):
     issue_file = issue_number + language_suffix(language)
 
     if not os.path.exists(issue_file):
-        issue_url = "https://iorj.hse.ru" + ("/en" if language == "en" else "") + "/" + issue_number + ".html"
+        issue_url = f"https://iorj.hse.ru{'/en' if language == 'en' else ''}/{issue_number}.html"
 
         issue_content = requests.get(issue_url).text
 
@@ -216,6 +270,9 @@ def gather_issue_data(issues_numbers, raw_downloads_path):
     issues = []
     for issue in issues_numbers:
         for language in ['ru', 'en']:
+            if (issue, language) in ignore_issues:
+                continue
+
             issue_file = ensure_issue_file(issue, language)
 
             articles = []
@@ -245,8 +302,9 @@ def write_csv(filename, rows):
 
 
 def write_user_reports():
-    write_csv('views_by_country', [[name] + metrics for name, _, *metrics in views_by_country()])
-    write_csv('views_by_city', views_by_city())
+    for language in ['ru', 'en']:
+        write_csv(f'views_by_country_{language}', views_by_country(language))
+        write_csv(f'views_by_city_{language}', views_by_city(language))
 
 
 def write_issue_report(issues=interesting_issues):
@@ -271,24 +329,20 @@ def write_issue_report(issues=interesting_issues):
 
 
 def basic_stats():
-    ru_views, ru_visits = make_query(diff={
-        'filters': "ym:pv:URLDomain=='iorj.hse.ru' AND ym:pv:URLPath!*'/en/*'",
-        'metrics': 'ym:pv:pageviews,ym:pv:users'})['data'][0]['metrics']
-    en_views, en_visits = make_query(diff={
-        'filters': "ym:pv:URLDomain=='iorj.hse.ru' AND ym:pv:URLPath=*'/en/*'",
-        'metrics': 'ym:pv:pageviews,ym:pv:users'})['data'][0]['metrics']
+    _, ru_views, ru_visits = process_request(default_query_with(filters=lambda filters: f'{filters} AND {RussianPageFilter}'), [])[0]
+    _, en_views, en_visits = process_request(default_query_with(filters=lambda filters: f'{filters} AND {EnglishPageFilter}'), [])[0]
 
     downloads = parse_raw_downloads(raw_downloads_path)
     ru_downloads = sum(download.count for (id, download) in downloads.items() if not id.endswith('en'))
     en_downloads = sum(download.count for (id, download) in downloads.items() if id.endswith('en'))
 
-    print(int(ru_views), int(ru_visits), ru_downloads)
-    print(int(en_views), int(en_visits), en_downloads)
+    print('Russian page (views, visits, downloads):', int(ru_views), int(ru_visits), ru_downloads)
+    print('English page (views, visits, downloads):', int(en_views), int(en_visits), en_downloads)
 
 
 def main():
-    basic_stats()
-    write_user_reports()
+    # basic_stats()
+    # write_user_reports()
     write_issue_report()
 
 
