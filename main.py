@@ -12,11 +12,11 @@ import util
 
 # Parameters for this script
 
-report_dirname = '/Users/kkolmar/common/iorj/report2021/'
-data_start_date = '2020-12-01'
-data_end_date = '2021-12-01'
+report_dirname = '/Users/kkolmar/common/iorj/report2022/'
+data_start_date = '2021-12-01'
+data_end_date = '2022-12-01'
 
-interesting_issues = ['2020-15-4', '2021-16-1', '2021-16-2', '2021-16-3']
+interesting_issues = ['2021-16-4', '2022-17-1', '2022-17-2', '2022-17-3']
 ignore_issues = {('2021-16-3', 'en')}
 
 dirpath = report_dirname
@@ -116,8 +116,6 @@ def process_request(query, keys):
         print(f'Executing for period {(date1, date2)}')
 
         query_result = execute_query(query, {'date1': date1, 'date2': date2})
-        # print(query)
-        # print(query_result)
 
         if 'data' in query_result:
             for data in query_result['data']:
@@ -150,14 +148,17 @@ def process_request(query, keys):
     return [tuple([key] + dependant_dimensions[key] + result[key]) for key in sorted_result_keys]
 
 
-# def combine_results(data1, data2):
-#     return sorted( 
-#         {
-#             key: data1.get(key, [0, 0]) + data2.get(key, [0, 0])
-#             for key in set(data1) | set(data2)
-#         }.items(), 
-#         key=lambda item: item[1],
-#         reverse=True)
+def combine_datasets(data_list_1, data_list_2):
+    data1 = {key: values for key, *values in data_list_1}
+    data2 = {key: values for key, *values in data_list_2}
+
+    return sorted(
+        [
+            [key] + data1.get(key, [0, 0]) + data2.get(key, [0, 0])
+            for key in set(data1) | set(data2)
+        ],
+        key=lambda item: item[1:],
+        reverse=True)
 
 
 def views_by_country(language):
@@ -167,7 +168,6 @@ def views_by_country(language):
         filters=lambda filters: f'{filters} AND {page_language_filter(language)}',
         limit=300)
 
-    # return process_request(query, 'name', 'iso_name'])
     return process_request(query, 'name')
 
 
@@ -175,10 +175,7 @@ def views_by_city(language):
     print(f'Querying by city for {language}')
     query = default_query_with(
         dimensions='ym:pv:regionCity',
-        # 'filters': lambda filters: f"{filters} AND {UserFromRussiaFilter}"})
-        # 'filters': lambda filters: f"{filters} AND ym:pv:regionCountryIsoName=.('RU', 'UA', 'KZ', 'BY')"
         filters=lambda filters: f'{filters} AND {page_language_filter(language)}')
-
 
     return process_request(query, 'name')
 
@@ -190,9 +187,9 @@ def language_suffix(language):
 def views_of_issues(issues):
     issue_articles = {issue: {} for issue in issues}
 
-    query = default_query_with({
-        'dimensions': 'ym:pv:URLPath',
-        'limit': 5000})
+    query = default_query_with(
+        dimensions='ym:pv:URLPath',
+        limit=5000)
 
     result = process_request(query, 'name')
 
@@ -295,16 +292,37 @@ def gather_issue_data(issues_numbers, raw_downloads_path):
     return issues
 
 
+def read_csv(filename):
+    with open(os.path.join(dirpath, filename + '.csv'), 'r', encoding='utf-8') as file:
+        return list(csv.reader(file, delimiter=';'))
+
+
 def write_csv(filename, rows):
     with open(os.path.join(dirpath, filename + '.csv'), 'w', encoding='utf-8') as file:
         writer = csv.writer(file, delimiter=';')
         writer.writerows(rows)
 
 
+def round_to_10(dataset):
+    return [row[:1] + [round(int(item), -1) for item in row[1:]] for row in dataset]
+
+
 def write_user_reports():
-    for language in ['ru', 'en']:
-        write_csv(f'views_by_country_{language}', views_by_country(language))
-        write_csv(f'views_by_city_{language}', views_by_city(language))
+    datasets = {}
+
+    languages = ['ru', 'en']
+    dataset_builders = [views_by_country, views_by_city]
+
+    for language in languages:
+        for builder in dataset_builders:
+            datasets[f'{builder.__name__}_{language}'] = builder(language)
+
+    for builder in dataset_builders:
+        name = builder.__name__
+        datasets[name] = combine_datasets(*[datasets[f'{name}_{language}'] for language in languages])
+
+    for name, values in datasets.items():
+        write_csv(name, values)
 
 
 def write_issue_report(issues=interesting_issues):
@@ -341,8 +359,8 @@ def basic_stats():
 
 
 def main():
-    # basic_stats()
-    # write_user_reports()
+    basic_stats()
+    write_user_reports()
     write_issue_report()
 
 
